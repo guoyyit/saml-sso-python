@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
+
+from .errors import UnknownIdPError
 
 
 @dataclass(frozen=True)
@@ -42,9 +45,55 @@ class Settings:
 
     def get_idp(self, idp_id: str) -> IdpConfig:
         """按 idp_id 查找配置，未配置时抛出 UnknownIdPError。"""
-        raise NotImplementedError
+        try:
+            return self.idps[idp_id]
+        except KeyError:
+            raise UnknownIdPError(f"unknown identity provider: {idp_id!r}") from None
 
 
 def load_settings(path: str | Path) -> Settings:
-    """从 JSON 文件加载配置。"""
-    raise NotImplementedError
+    """从 JSON 文件加载配置。
+
+    文件结构示例::
+
+        {
+          "sp_entity_id": "urn:example:sp",
+          "sp_acs_url": "https://sp.example.com/saml/acs",
+          "clock_skew_seconds": 60,
+          "session_ttl_seconds": 28800,
+          "replay_db_path": "replay_cache.sqlite3",
+          "audit_log_path": "audit.log",
+          "idps": {
+            "corp-idp": {
+              "entity_id": "urn:corp:idp",
+              "sso_url": "https://idp.example.com/sso",
+              "certificates": ["<PEM 文本>", ...],
+              "attribute_mapping": {"mail": "email", "uid": "uid"},
+              "required_attributes": ["uid"],
+              "sensitive_attributes": ["email"]
+            }
+          }
+        }
+    """
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    idps = {
+        idp_id: IdpConfig(
+            idp_id=idp_id,
+            entity_id=cfg["entity_id"],
+            sso_url=cfg.get("sso_url", ""),
+            certificates=tuple(cfg.get("certificates", ())),
+            attribute_mapping=dict(cfg.get("attribute_mapping", {})),
+            required_attributes=tuple(cfg.get("required_attributes", ("uid",))),
+            sensitive_attributes=tuple(cfg.get("sensitive_attributes", ("email",))),
+        )
+        for idp_id, cfg in raw.get("idps", {}).items()
+    }
+    return Settings(
+        sp_entity_id=raw.get("sp_entity_id", "urn:example:sp"),
+        sp_acs_url=raw.get("sp_acs_url", "http://localhost:8000/saml/acs"),
+        clock_skew=timedelta(seconds=raw.get("clock_skew_seconds", 60)),
+        session_ttl=timedelta(seconds=raw.get("session_ttl_seconds", 8 * 3600)),
+        replay_db_path=Path(raw.get("replay_db_path", "replay_cache.sqlite3")),
+        audit_log_path=Path(raw.get("audit_log_path", "audit.log")),
+        idps=idps,
+    )
