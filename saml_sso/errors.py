@@ -77,3 +77,9 @@ class LogoutError(SamlError):
     """单点登出处理错误。"""
 
     code: str = "logout_error"
+
+
+class AuthenticationError(SamlError):
+    """请求未携带有效本地会话。"""
+
+    code: str = "not_authenticated"
