@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
 
-from cryptography import x509
-from cryptography.hazmat.primitives.serialization import Encoding
 from lxml import etree
 
+from saml_sso.certs import der_b64_to_pem, normalize_pem
 from saml_sso.errors import MetadataError
 
 NS_MD = "urn:oasis:names:tc:SAML:2.0:metadata"
@@ -24,16 +22,6 @@ class IdpMetadata:
     slo_url: str | None = None
     #: 签名证书（PEM 列表，按出现顺序）
     signing_certificates: tuple[str, ...] = ()
-
-
-def _der_b64_to_pem(b64_der: str) -> str:
-    """把元数据中的 base64 DER 证书规范化为 PEM。"""
-    try:
-        der = base64.b64decode("".join(b64_der.split()))
-        cert = x509.load_der_x509_certificate(der)
-        return cert.public_bytes(Encoding.PEM).decode("ascii")
-    except Exception as exc:  # noqa: BLE001 - 统一归一为元数据错误
-        raise MetadataError(f"invalid X.509 certificate in metadata: {exc}") from exc
 
 
 def parse_metadata(xml: str | bytes) -> IdpMetadata:
@@ -67,7 +55,7 @@ def parse_metadata(xml: str | bytes) -> IdpMetadata:
             continue
         for cert_el in key_desc.iter(f"{{{NS_DS}}}X509Certificate"):
             if cert_el.text:
-                pem = _der_b64_to_pem(cert_el.text)
+                pem = der_b64_to_pem(cert_el.text)
                 if pem not in certs:
                     certs.append(pem)
 
@@ -90,11 +78,6 @@ def parse_metadata(xml: str | bytes) -> IdpMetadata:
     )
 
 
-def _normalize_pem(pem: str) -> str:
-    """规范化 PEM 文本，避免空白差异导致同一密钥被当作两个。"""
-    return "".join(pem.split())
-
-
 @dataclass
 class TrustedKeyStore:
     """管理各 IdP 的受信任签名密钥，支持轮换期间多密钥并存。"""
@@ -105,21 +88,21 @@ class TrustedKeyStore:
         """整体替换某 IdP 的受信任密钥集合。"""
         seen: list[str] = []
         for pem in certs_pem:
-            norm = _normalize_pem(pem)
+            norm = normalize_pem(pem)
             if norm not in seen:
                 seen.append(norm)
         self._keys[entity_id] = seen
 
     def add_key(self, entity_id: str, cert_pem: str) -> None:
         """为某 IdP 追加一个受信任密钥（轮换时先加新密钥）。"""
-        norm = _normalize_pem(cert_pem)
+        norm = normalize_pem(cert_pem)
         keys = self._keys.setdefault(entity_id, [])
         if norm not in keys:
             keys.append(norm)
 
     def remove_key(self, entity_id: str, cert_pem: str) -> None:
         """移除某 IdP 的一个密钥（轮换完成后下线旧密钥）。"""
-        norm = _normalize_pem(cert_pem)
+        norm = normalize_pem(cert_pem)
         keys = self._keys.get(entity_id, [])
         if norm in keys:
             keys.remove(norm)
