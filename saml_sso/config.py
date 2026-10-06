@@ -45,4 +45,7 @@ class Settings:
 
     def idp_by_entity_id(self, entity_id: str) -> IdpConfig | None:
         """按 entityID 查找 IdP 配置。"""
-        raise NotImplementedError
+        for idp in self.idps:
+            if idp.entity_id == entity_id:
+                return idp
+        return None

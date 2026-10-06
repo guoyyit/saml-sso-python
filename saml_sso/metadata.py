@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
+
+from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding
+from lxml import etree
+
+from saml_sso.errors import MetadataError
+
+NS_MD = "urn:oasis:names:tc:SAML:2.0:metadata"
+NS_DS = "http://www.w3.org/2000/09/xmldsig#"
 
 
 @dataclass(frozen=True)
@@ -16,9 +26,73 @@ class IdpMetadata:
     signing_certificates: tuple[str, ...] = ()
 
 
+def _der_b64_to_pem(b64_der: str) -> str:
+    """把元数据中的 base64 DER 证书规范化为 PEM。"""
+    try:
+        der = base64.b64decode("".join(b64_der.split()))
+        cert = x509.load_der_x509_certificate(der)
+        return cert.public_bytes(Encoding.PEM).decode("ascii")
+    except Exception as exc:  # noqa: BLE001 - 统一归一为元数据错误
+        raise MetadataError(f"invalid X.509 certificate in metadata: {exc}") from exc
+
+
 def parse_metadata(xml: str | bytes) -> IdpMetadata:
-    """解析 SAML 元数据 XML，提取 entityID、SSO/SLO 端点与签名密钥。"""
-    raise NotImplementedError
+    """解析 SAML 元数据 XML，提取 entityID、SSO/SLO 端点与签名密钥。
+
+    只采纳 KeyDescriptor 中 use 为 signing 或未声明 use 的密钥。
+    """
+    try:
+        parser = etree.XMLParser(resolve_entities=False, no_network=True)
+        root = etree.fromstring(
+            xml.encode() if isinstance(xml, str) else xml, parser
+        )
+    except etree.XMLSyntaxError as exc:
+        raise MetadataError(f"malformed metadata XML: {exc}") from exc
+
+    if root.tag != f"{{{NS_MD}}}EntityDescriptor":
+        raise MetadataError(f"unexpected root element: {root.tag}")
+
+    entity_id = root.get("entityID")
+    if not entity_id:
+        raise MetadataError("metadata missing entityID")
+
+    idp_descriptor = root.find(f"{{{NS_MD}}}IDPSSODescriptor")
+    if idp_descriptor is None:
+        raise MetadataError("metadata has no IDPSSODescriptor")
+
+    certs: list[str] = []
+    for key_desc in idp_descriptor.findall(f"{{{NS_MD}}}KeyDescriptor"):
+        use = key_desc.get("use")
+        if use not in (None, "signing"):
+            continue
+        for cert_el in key_desc.iter(f"{{{NS_DS}}}X509Certificate"):
+            if cert_el.text:
+                pem = _der_b64_to_pem(cert_el.text)
+                if pem not in certs:
+                    certs.append(pem)
+
+    sso_url: str | None = None
+    slo_url: str | None = None
+    for svc in idp_descriptor.findall(f"{{{NS_MD}}}SingleSignOnService"):
+        if svc.get("Location"):
+            sso_url = svc.get("Location")
+            break
+    for svc in idp_descriptor.findall(f"{{{NS_MD}}}SingleLogoutService"):
+        if svc.get("Location"):
+            slo_url = svc.get("Location")
+            break
+
+    return IdpMetadata(
+        entity_id=entity_id,
+        sso_url=sso_url,
+        slo_url=slo_url,
+        signing_certificates=tuple(certs),
+    )
+
+
+def _normalize_pem(pem: str) -> str:
+    """规范化 PEM 文本，避免空白差异导致同一密钥被当作两个。"""
+    return "".join(pem.split())
 
 
 @dataclass
@@ -29,16 +103,27 @@ class TrustedKeyStore:
 
     def set_keys(self, entity_id: str, certs_pem: list[str]) -> None:
         """整体替换某 IdP 的受信任密钥集合。"""
-        raise NotImplementedError
+        seen: list[str] = []
+        for pem in certs_pem:
+            norm = _normalize_pem(pem)
+            if norm not in seen:
+                seen.append(norm)
+        self._keys[entity_id] = seen
 
     def add_key(self, entity_id: str, cert_pem: str) -> None:
         """为某 IdP 追加一个受信任密钥（轮换时先加新密钥）。"""
-        raise NotImplementedError
+        norm = _normalize_pem(cert_pem)
+        keys = self._keys.setdefault(entity_id, [])
+        if norm not in keys:
+            keys.append(norm)
 
     def remove_key(self, entity_id: str, cert_pem: str) -> None:
         """移除某 IdP 的一个密钥（轮换完成后下线旧密钥）。"""
-        raise NotImplementedError
+        norm = _normalize_pem(cert_pem)
+        keys = self._keys.get(entity_id, [])
+        if norm in keys:
+            keys.remove(norm)
 
     def keys_for(self, entity_id: str) -> list[str]:
         """返回某 IdP 当前全部受信任密钥。"""
-        raise NotImplementedError
+        return list(self._keys.get(entity_id, []))
