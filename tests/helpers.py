@@ -138,3 +138,45 @@ class LocalIdP:
                 response.append(signed)
 
         return etree.tostring(response, xml_declaration=True, encoding="utf-8")
+
+    def build_logout_request(
+        self,
+        *,
+        name_id: str = "user@example.com",
+        session_index: str | None = "_session1",
+        issuer: str | None = None,
+        sign: bool = True,
+    ) -> bytes:
+        """构造一个 IdP 发起的 LogoutRequest，默认签名。"""
+        now = datetime.now(timezone.utc)
+        nsmap = {"saml": SAML_NS, "samlp": SAMLP_NS}
+        request = etree.Element(f"{{{SAMLP_NS}}}LogoutRequest", nsmap=nsmap)
+        request.set("ID", f"_{uuid.uuid4().hex}")
+        request.set("Version", "2.0")
+        request.set("IssueInstant", _fmt(now))
+
+        issuer_el = etree.SubElement(request, f"{{{SAML_NS}}}Issuer")
+        issuer_el.text = issuer if issuer is not None else self.entity_id
+
+        name_id_el = etree.SubElement(request, f"{{{SAML_NS}}}NameID")
+        name_id_el.text = name_id
+
+        if session_index is not None:
+            idx_el = etree.SubElement(request, f"{{{SAMLP_NS}}}SessionIndex")
+            idx_el.text = session_index
+
+        if sign:
+            signer = XMLSigner(
+                signature_algorithm="rsa-sha256",
+                digest_algorithm="sha256",
+                c14n_algorithm=EXCLUSIVE_C14N,
+            )
+            request = signer.sign(
+                request,
+                key=self.key_pem,
+                cert=self.cert_pem,
+                reference_uri=f"#{request.get('ID')}",
+                id_attribute="ID",
+            )
+
+        return etree.tostring(request, xml_declaration=True, encoding="utf-8")

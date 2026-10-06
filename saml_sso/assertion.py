@@ -221,6 +221,55 @@ def _extract(assertion: etree._Element, idp: IdpConfig) -> tuple[str, str, str, 
     return assertion_id, issuer, name_id, session_index, attributes
 
 
+@dataclass(frozen=True)
+class LogoutRequestData:
+    """校验通过的 LogoutRequest 数据。"""
+
+    request_id: str
+    issuer: str
+    name_id: str
+    session_index: str | None
+
+
+def validate_logout_request(xml_bytes: bytes, idp: IdpConfig) -> LogoutRequestData:
+    """校验 IdP 发来的 LogoutRequest（单点登出）。
+
+    必须携带有效签名；发行方必须与所选 IdP 配置一致。
+    """
+    root = _parse_xml(xml_bytes)
+    if _local(root) != "LogoutRequest":
+        raise MalformedAssertionError(f"expected LogoutRequest, got {_local(root)!r}")
+    if _direct_signature(root) is None:
+        raise UnsignedAssertionError("LogoutRequest is not signed")
+
+    verified = _verify_signature(root, idp)
+
+    request_id = verified.get("ID", "")
+    issuer_el = verified.find(f"{{{SAML_NS}}}Issuer")
+    issuer = (issuer_el.text or "").strip() if issuer_el is not None else ""
+    if issuer != idp.entity_id:
+        raise IssuerMismatchError(
+            f"logout request issuer {issuer!r} does not match idp {idp.idp_id!r}"
+        )
+
+    name_id_el = verified.find(f"{{{SAML_NS}}}NameID")
+    name_id = (name_id_el.text or "").strip() if name_id_el is not None else ""
+    if not name_id:
+        raise MalformedAssertionError("LogoutRequest missing NameID")
+
+    session_index_el = verified.find(f"{{{SAMLP_NS}}}SessionIndex")
+    session_index = (
+        (session_index_el.text or "").strip() or None if session_index_el is not None else None
+    )
+
+    return LogoutRequestData(
+        request_id=request_id,
+        issuer=issuer,
+        name_id=name_id,
+        session_index=session_index,
+    )
+
+
 def validate_response(
     xml_bytes: bytes,
     idp: IdpConfig,
