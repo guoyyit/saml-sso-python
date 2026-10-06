@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from .config import IdpConfig
+from .errors import MissingAttributeError
 
 
 def map_attributes(idp: IdpConfig, assertion_attributes: dict[str, list[str]]) -> dict[str, str]:
@@ -13,6 +14,18 @@ def map_attributes(idp: IdpConfig, assertion_attributes: dict[str, list[str]]) -
 
     - 只保留映射表中声明的属性（IdP 之间隔离，未知属性不进入会话）
     - 多值属性取第一个值
-    - 缺少必需属性时抛出 MissingAttributeError
+    - 缺少必需属性或必需属性为空时抛出 MissingAttributeError
     """
-    raise NotImplementedError
+    local: dict[str, str] = {}
+    for remote_name, local_name in idp.attribute_mapping.items():
+        values = assertion_attributes.get(remote_name)
+        if values:
+            local[local_name] = values[0]
+
+    missing = [name for name in idp.required_attributes if not local.get(name)]
+    if missing:
+        raise MissingAttributeError(
+            f"assertion from idp {idp.idp_id!r} missing required attributes: {missing!r}",
+            detail={"idp_id": idp.idp_id, "missing": missing},
+        )
+    return local
