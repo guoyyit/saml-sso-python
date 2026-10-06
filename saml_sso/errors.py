@@ -65,6 +65,12 @@ class AudienceRestrictionError(SAMLError):
     code = "audience_restriction"
 
 
+class IssuerMismatchError(SAMLError):
+    """断言发行方与所选身份提供方不符。"""
+
+    code = "issuer_mismatch"
+
+
 class ReplayDetectedError(SAMLError):
     """同一断言标识被重复消费。"""
 
