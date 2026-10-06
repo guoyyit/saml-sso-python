@@ -136,6 +136,8 @@ class LocalIdP:
                 # sign 可能返回新树，需要替换 response 中的 assertion
                 response.remove(assertion)
                 response.append(signed)
+            elif target is response:
+                response = signed
 
         return etree.tostring(response, xml_declaration=True, encoding="utf-8")
 
