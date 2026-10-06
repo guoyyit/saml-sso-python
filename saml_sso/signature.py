@@ -63,19 +63,19 @@ def _extract_verified_assertion(signed_el: etree._Element) -> etree._Element:
     raise SignatureInvalidError("signed content contains no Assertion")
 
 
-def verify_response_signature(
-    response_xml: bytes, trusted_certs_pem: list[str]
+def verify_xml_signature(
+    xml_bytes: bytes, trusted_certs_pem: list[str]
 ) -> etree._Element:
-    """校验 SAML Response（或其内 Assertion）的签名。
+    """校验任意 SAML 消息（Response / LogoutRequest 等）的签名。
 
-    返回已验证的 Assertion 元素。
-    未签名 / 签名无效 / 密钥不受信任分别抛出对应错误。
+    返回已验签的签名所保护的元素。未签名 / 签名无效 / 密钥不受信任
+    分别抛出对应错误。
     """
-    root = _parse_xml(response_xml)
+    root = _parse_xml(xml_bytes)
 
     signature_el = _find_signature(root)
     if signature_el is None:
-        raise SignatureMissingError("SAML response carries no signature")
+        raise SignatureMissingError("SAML message carries no signature")
 
     embedded_pem = _embedded_cert_pem(signature_el)
     if embedded_pem is None:
@@ -83,7 +83,7 @@ def verify_response_signature(
 
     trusted_normalized = {normalize_pem(p) for p in trusted_certs_pem}
     if normalize_pem(embedded_pem) not in trusted_normalized:
-        raise UntrustedKeyError("assertion signed with an untrusted key")
+        raise UntrustedKeyError("message signed with an untrusted key")
 
     verifier = XMLVerifier()
     try:
@@ -92,9 +92,16 @@ def verify_response_signature(
         raise SignatureInvalidError(f"signature verification failed: {exc}") from exc
 
     results = result if isinstance(result, list) else [result]
-    for item in results:
-        try:
-            return _extract_verified_assertion(item.signed_xml)
-        except SignatureInvalidError:
-            continue
-    raise SignatureInvalidError("no signed Assertion could be verified")
+    return results[0].signed_xml
+
+
+def verify_response_signature(
+    response_xml: bytes, trusted_certs_pem: list[str]
+) -> etree._Element:
+    """校验 SAML Response（或其内 Assertion）的签名。
+
+    返回已验证的 Assertion 元素。
+    未签名 / 签名无效 / 密钥不受信任分别抛出对应错误。
+    """
+    signed_el = verify_xml_signature(response_xml, trusted_certs_pem)
+    return _extract_verified_assertion(signed_el)

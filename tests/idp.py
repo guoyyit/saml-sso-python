@@ -184,3 +184,50 @@ class FakeIdP:
     def build_response_b64(self, **kwargs) -> str:
         """构造并 base64 编码，模拟 POST 绑定表单字段。"""
         return base64.b64encode(self.build_response_xml(**kwargs).encode()).decode()
+
+
+LOGOUT_REQUEST_TEMPLATE = """<samlp:LogoutRequest xmlns:samlp="{samlp}" xmlns:saml="{saml}"
+    ID="{request_id}" Version="2.0" IssueInstant="{issue_instant}">
+  <saml:Issuer>{issuer}</saml:Issuer>
+  <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">{name_id}</saml:NameID>
+  {session_index_xml}
+</samlp:LogoutRequest>"""
+
+
+def build_logout_request_b64(
+    idp: "FakeIdP",
+    *,
+    name_id: str,
+    session_index: str | None = None,
+    sign: bool = True,
+) -> str:
+    """构造（可选签名的）LogoutRequest 并 base64 编码。"""
+    now = datetime.now(timezone.utc)
+    session_index_xml = (
+        f"<samlp:SessionIndex>{session_index}</samlp:SessionIndex>"
+        if session_index
+        else ""
+    )
+    xml = LOGOUT_REQUEST_TEMPLATE.format(
+        samlp=NS_SAMLP,
+        saml=NS_SAML,
+        request_id=f"_lr{uuid.uuid4().hex}",
+        issue_instant=_utc(now),
+        issuer=idp.entity_id,
+        name_id=name_id,
+        session_index_xml=session_index_xml,
+    )
+    if sign:
+        root = etree.fromstring(xml.encode())
+        signer = XMLSigner(
+            method=methods.enveloped,
+            signature_algorithm="rsa-sha256",
+            digest_algorithm="sha256",
+            c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#",
+        )
+        root = signer.sign(
+            root, key=idp.key_pem, cert=idp.cert_pem,
+            reference_uri=f"#{root.get('ID')}",
+        )
+        xml = etree.tostring(root).decode()
+    return base64.b64encode(xml.encode()).decode()
